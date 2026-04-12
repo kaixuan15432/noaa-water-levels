@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
