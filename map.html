@@ -12,9 +12,17 @@
         #sidebar.active { display: block; }
         h2 { margin: 0 0 10px 0; color: #333; }
         #chart-container { width: 100%; height: calc(100% - 40px); }
+        #controls { position: absolute; top: 10px; left: 10px; z-index: 1000; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 5px rgba(0,0,0,0.3); }
+        #controls select { padding: 5px; }
     </style>
 </head>
 <body>
+    <div id="controls">
+        <select id="bpFileSelect">
+            <option value="Florida_1mv1.bp">Florida Stations</option>
+            <option value="Irma_elev.bp">Irma Stations</option>
+        </select>
+    </div>
     <div id="map"></div>
     <div id="sidebar">
         <h2 id="stationTitle">Station</h2>
@@ -28,30 +36,71 @@ var stations = [];
 var modelData = {};
 var stationObservedData = {};
 var map;
+var currentBPFile = 'Florida_1mv1.bp';
+var modelTimeRange = {};
 
 async function initMap() {
     map = L.map('map').setView([27.0, -82.0], 7);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: 'OpenStreetMap'
     }).addTo(map);
+    
+    document.getElementById('bpFileSelect').addEventListener('change', async function(e) {
+        currentBPFile = e.target.value;
+        await loadBPFile();
+        updateMarkers();
+    });
+    
     await loadBPFile();
+    updateMarkers();
+}
+
+async function loadBPFile() {
+    var response = await fetch('data/' + currentBPFile);
+    var text = await response.text();
+    var lines = text.trim().split('\n');
+    stations = [];
+    
+    if (currentBPFile === 'Irma_elev.bp') {
+        for (var i = 2; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line || line.startsWith('#')) continue;
+            var hashIdx = line.index('#');
+            if (hashIdx === -1) continue;
+            var leftPart = line.substring(0, hashIdx).trim();
+            var rightPart = line.substring(hashIdx + 1).trim();
+            var leftParts = leftPart.split(/\s+/);
+            var rightParts = rightPart.split(/\s+/);
+            if (leftParts.length >= 3 && rightParts.length >= 1) {
+                stations.push({
+                    id: rightParts[0],
+                    apiId: rightParts[1] || '',
+                    lat: leftParts[2],
+                    lng: leftParts[1],
+                    name: rightParts[0]
+                });
+            }
+        }
+    } else {
+        for (var i = 2; i < lines.length; i++) {
+            var parts = lines[i].trim().split(/\s+/);
+            if (parts.length >= 5) {
+                stations.push({ id: parts[4], lat: parts[2], lng: parts[1], name: parts[4], apiId: '' });
+            }
+        }
+    }
+}
+
+function updateMarkers() {
+    map.eachLayer(function(layer) {
+        if (layer instanceof L.Marker) {
+            map.removeLayer(layer);
+        }
+    });
     stations.forEach(function(station) {
         var marker = L.marker([parseFloat(station.lat), parseFloat(station.lng)]).addTo(map);
         marker.on('click', function() { openSidebar(station); });
     });
-}
-
-async function loadBPFile() {
-    var response = await fetch('data/Florida_1mv1.bp');
-    var text = await response.text();
-    var lines = text.trim().split('\n');
-    stations = [];
-    for (var i = 2; i < lines.length; i++) {
-        var parts = lines[i].trim().split(/\s+/);
-        if (parts.length >= 5) {
-            stations.push({ id: parts[4], lat: parts[2], lng: parts[1], name: parts[4] });
-        }
-    }
 }
 
 function getStationName(id) {
@@ -75,7 +124,11 @@ function getStationName(id) {
 async function openSidebar(station) {
     document.getElementById('sidebar').classList.add('active');
     await loadModelData();
-    await loadStationData(station.id);
+    if (currentBPFile === 'Irma_elev.bp' && station.apiId) {
+        await loadIrmaStationData(station.apiId);
+    } else {
+        await loadStationData(station.id);
+    }
     renderCompareChart(station);
 }
 
@@ -89,21 +142,78 @@ async function loadModelData() {
     modelData = {};
     stations.forEach(function(s) { modelData[s.id] = []; });
     var firstTime = null, lastTime = null;
+    
+    var numStations = currentBPFile === 'Irma_elev.bp' ? 8 : 12;
+    var startCol = currentBPFile === 'Irma_elev.bp' ? 12 : 0;
+    
     lines.forEach(function(line, index) {
         var timestamp = new Date(modelStart.getTime() + index * 3600000);
         var parts = line.trim().split(/\s+/);
         if (!firstTime) firstTime = timestamp;
         lastTime = timestamp;
-        if (parts.length >= 13) {
-            for (var i = 0; i < 12 && i < stations.length; i++) {
-                var value = parseFloat(parts[i + 1]);
-                if (!isNaN(value)) {
-                    modelData[stations[i].id].push({ time: timestamp, value: value });
-                }
+        
+        var dataStartIdx = 1 + startCol;
+        for (var i = 0; i < numStations && i < stations.length; i++) {
+            var value = parseFloat(parts[dataStartIdx + i]);
+            if (!isNaN(value)) {
+                modelData[stations[i].id].push({ time: timestamp, value: value });
             }
         }
     });
     modelTimeRange = { start: firstTime, end: lastTime };
+}
+
+async function loadIrmaStationData(apiId) {
+    if (!modelTimeRange.start || !modelTimeRange.end || !apiId) return;
+    
+    var now = new Date();
+    var startDate = new Date(now);
+    startDate.setDate(startDate.getDate() - 7);
+    var startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+    var endStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+    
+    var url = 'https://insightsdata.api.sfwmd.gov/v1/insights-data/cont/data?timeseriesIds=' + apiId + '&reportType=timeseries&format=plot&period=1week';
+    
+    try {
+        var response = await fetch(url);
+        if (!response.ok) return;
+        var data = await response.json();
+        
+        if (!data.timeseries || !data.timeseries[0] || !data.timeseries[0].values) return;
+        
+        var rawData = [];
+        data.timeseries[0].values.forEach(function(item) {
+            if (item.x && item.y !== null) {
+                var dt = new Date(item.x);
+                var val = parseFloat(item.y) * 0.3048;
+                rawData.push({ time: dt, value: val });
+            }
+        });
+        
+        rawData.sort(function(a, b) { return a.time - b.time; });
+        
+        var hourlyData = {};
+        rawData.forEach(function(d) {
+            var hourKey = new Date(d.time);
+            hourKey.setMinutes(0, 0, 0);
+            if (!hourlyData[hourKey.getTime()]) {
+                hourlyData[hourKey.getTime()] = [];
+            }
+            hourlyData[hourKey.getTime()].push(d.value);
+        });
+        
+        var result = [];
+        Object.keys(hourlyData).sort().forEach(function(k) {
+            var values = hourlyData[k];
+            var avg = values.reduce(function(a, b) { return a + b; }, 0) / values.length;
+            result.push({ time: new Date(parseInt(k)), value: avg });
+        });
+        
+        var modelStartUTC = modelTimeRange.start.getTime();
+        stationObservedData[apiId] = result.filter(function(d) { return d.time.getTime() >= modelStartUTC; });
+    } catch (err) {
+        console.error(err);
+    }
 }
 
 async function loadStationData(stationId) {
@@ -140,9 +250,9 @@ function removeAnomaly(data) {
 }
 
 function renderCompareChart(station) {
-    var stationId = station.id;
+    var stationId = currentBPFile === 'Irma_elev.bp' ? station.apiId : station.id;
     var observedData = removeAnomaly(stationObservedData[stationId] || []);
-    var predData = removeAnomaly(modelData[stationId] || []);
+    var predData = removeAnomaly(modelData[station.id] || []);
     
     var obsMap = new Map();
     observedData.forEach(function(d) { obsMap.set(d.time.getTime(), d.value); });
@@ -159,20 +269,18 @@ function renderCompareChart(station) {
     });
     var mae = count > 0 ? absSum / count : 0;
     
-    document.getElementById('stationTitle').textContent = station.id + ' - ' + getStationName(station.id) + 
+    var stationDisplayName = currentBPFile === 'Irma_elev.bp' ? station.name : getStationName(station.id);
+    document.getElementById('stationTitle').textContent = station.name + 
+        (currentBPFile === 'Irma_elev.bp' && station.apiId ? ' (' + station.apiId + ')' : ' - ' + stationDisplayName) + 
         ' (MAE: ' + mae.toFixed(3) + ')';
     
     var chartStartTime = modelTimeRange.start.getTime();
-    
-    var obsValues = observedData.map(function(d) { return d.value; });
-    var predValues = predData.map(function(d) { return d.value; });
-    
-    var chartStartTime = modelTimeRange.start.getTime();
     var chartEndTime = modelTimeRange.end.getTime();
-    var obsMap = new Map();
-    observedData.forEach(function(d) { obsMap.set(d.time.getTime(), d.value); });
-    var predMap = new Map();
-    predData.forEach(function(d) { predMap.set(d.time.getTime(), d.value); });
+    
+    var obsMap2 = new Map();
+    observedData.forEach(function(d) { obsMap2.set(d.time.getTime(), d.value); });
+    var predMap2 = new Map();
+    predData.forEach(function(d) { predMap2.set(d.time.getTime(), d.value); });
     
     var labels = [];
     var obsDataset = [];
@@ -184,8 +292,8 @@ function renderCompareChart(station) {
                    String(date.getUTCDate()).padStart(2, '0') + ' ' + 
                    String(date.getUTCHours()).padStart(2, '0') + ':00';
         labels.push(label);
-        obsDataset.push(obsMap.has(t) ? obsMap.get(t) : null);
-        predDataset.push(predMap.has(t) ? predMap.get(t) : null);
+        obsDataset.push(obsMap2.has(t) ? obsMap2.get(t) : null);
+        predDataset.push(predMap2.has(t) ? predMap2.get(t) : null);
     }
     
     if (compareChart && compareChart.destroy) compareChart.destroy();
@@ -195,7 +303,7 @@ function renderCompareChart(station) {
         data: {
             labels: labels,
             datasets: [
-                { label: 'Observed (NOAA)', data: obsDataset, borderColor: '#0066cc', backgroundColor: 'rgba(0,102,204,0.1)', fill: false, pointRadius: 1, tension: 0.1, spanGaps: true },
+                { label: 'Observed', data: obsDataset, borderColor: '#0066cc', backgroundColor: 'rgba(0,102,204,0.1)', fill: false, pointRadius: 1, tension: 0.1, spanGaps: true },
                 { label: 'Model Prediction', data: predDataset, borderColor: '#cc0000', backgroundColor: 'rgba(204,0,0,0.05)', fill: false, pointRadius: 1, tension: 0.1, spanGaps: true }
             ]
         },
