@@ -63,13 +63,23 @@ function loadBPFile(bpFile) {
             if (isIrma) {
                 for (var i = 2; i < lines.length; i++) {
                     try {
-                        var line = String(lines[i] || '').trim();
-                        if (!line || line.indexOf('#') === -1) continue;
-                        var hashIdx = line.indexOf('#');
-                        var leftPart = line.substring(0, hashIdx).trim();
-                        var rightPart = line.substring(hashIdx + 1).trim();
-                        var leftParts = leftPart.split(/\s+/);
-                        var rightParts = rightPart.split(/\s+/);
+                        var rawLine = lines[i];
+                        if (!rawLine) continue;
+                        var lineStr = '';
+                        if (typeof rawLine === 'string') {
+                            lineStr = rawLine.trim();
+                        } else if (typeof rawLine === 'number') {
+                            lineStr = String(rawLine).trim();
+                        } else {
+                            lineStr = String(rawLine).trim();
+                        }
+                        if (!lineStr || lineStr.length === 0) continue;
+                        var hashPos = lineStr.indexOf('#');
+                        if (hashPos < 0) continue;
+                        var leftSide = lineStr.substring(0, hashPos).trim();
+                        var rightSide = lineStr.substring(hashPos + 1).trim();
+                        var leftParts = leftSide.split(/\s+/);
+                        var rightParts = rightSide.split(/\s+/);
                         if (leftParts.length >= 3 && rightParts.length >= 1) {
                             result.push({
                                 id: rightParts[0],
