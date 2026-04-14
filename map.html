@@ -12,17 +12,9 @@
         #sidebar.active { display: block; }
         h2 { margin: 0 0 10px 0; color: #333; }
         #chart-container { width: 100%; height: calc(100% - 40px); }
-        #controls { position: absolute; top: 10px; left: 10px; z-index: 1000; background: white; padding: 10px; border-radius: 5px; box-shadow: 0 0 5px rgba(0,0,0,0.3); }
-        #controls select { padding: 5px; }
     </style>
 </head>
 <body>
-    <div id="controls">
-        <select id="bpFileSelect">
-            <option value="Florida_1mv1.bp">Florida Stations</option>
-            <option value="Irma_elev.bp">Irma Stations</option>
-        </select>
-    </div>
     <div id="map"></div>
     <div id="sidebar">
         <h2 id="stationTitle">Station</h2>
@@ -36,7 +28,6 @@ var stations = [];
 var modelData = {};
 var stationObservedData = {};
 var map;
-var currentBPFile = 'Florida_1mv1.bp';
 var modelTimeRange = {};
 
 async function initMap() {
@@ -49,61 +40,66 @@ async function initMap() {
 }
 
 async function loadAllStations() {
-    await loadBPFile('Florida_1mv1.bp');
-    var floridaStations = stations.map(function(s) { return s; });
-    stations = [];
-    await loadBPFile('Irma_elev.bp');
-    var irmaStations = stations.map(function(s) { return s; });
-    stations = floridaStations.concat(irmaStations);
-    console.log('Total stations:', stations.length);
-    updateMarkers();
-}
-
-async function loadBPFile(bpFile) {
-    var response = await fetch('data/' + bpFile);
-    var text = await response.text();
-    var lines = text.trim().split('\n');
-    var isIrma = bpFile === 'Irma_elev.bp';
-    
-    if (isIrma) {
-        for (var i = 2; i < lines.length; i++) {
-            var line = lines[i].trim();
-            if (!line || line.startsWith('#')) continue;
-            var hashIdx = line.index('#');
-            if (hashIdx === -1) continue;
-            var leftPart = line.substring(0, hashIdx).trim();
-            var rightPart = line.substring(hashIdx + 1).trim();
-            var leftParts = leftPart.split(/\s+/);
-            var rightParts = rightPart.split(/\s+/);
-            if (leftParts.length >= 3 && rightParts.length >= 1) {
-                stations.push({
-                    id: rightParts[0],
-                    apiId: rightParts[1] || '',
-                    lat: leftParts[2],
-                    lng: leftParts[1],
-                    name: rightParts[0],
-                    isIrma: true
-                });
-            }
-        }
-    } else {
-        for (var i = 2; i < lines.length; i++) {
-            var parts = lines[i].trim().split(/\s+/);
-            if (parts.length >= 5) {
-                stations.push({ id: parts[4], lat: parts[2], lng: parts[1], name: parts[4], apiId: '', isIrma: false });
-            }
-        }
+    try {
+        var floridaStations = await loadBPFile('Florida_1mv1.bp');
+        var irmaStations = await loadBPFile('Irma_elev.bp');
+        stations = floridaStations.concat(irmaStations);
+        console.log('Total stations:', stations.length);
+        updateMarkers();
+    } catch (e) {
+        console.error('Error loading stations:', e);
     }
 }
 
-function updateMarkers() {
-    map.eachLayer(function(layer) {
-        if (layer instanceof L.Marker) {
-            map.removeLayer(layer);
-        }
+function loadBPFile(bpFile) {
+    return new Promise(function(resolve, reject) {
+        fetch('data/' + bpFile).then(function(response) {
+            return response.text();
+        }).then(function(text) {
+            var lines = text.trim().split('\n');
+            var result = [];
+            var isIrma = bpFile === 'Irma_elev.bp';
+            
+            if (isIrma) {
+                for (var i = 2; i < lines.length; i++) {
+                    var line = lines[i].trim();
+                    if (!line || line.startsWith('#')) continue;
+                    var hashIdx = line.index('#');
+                    if (hashIdx === -1) continue;
+                    var leftPart = line.substring(0, hashIdx).trim();
+                    var rightPart = line.substring(hashIdx + 1).trim();
+                    var leftParts = leftPart.split(/\s+/);
+                    var rightParts = rightPart.split(/\s+/);
+                    if (leftParts.length >= 3 && rightParts.length >= 1) {
+                        result.push({
+                            id: rightParts[0],
+                            apiId: rightParts[1] || '',
+                            lat: leftParts[2],
+                            lng: leftParts[1],
+                            name: rightParts[0],
+                            isIrma: true
+                        });
+                    }
+                }
+            } else {
+                for (var i = 2; i < lines.length; i++) {
+                    var parts = lines[i].trim().split(/\s+/);
+                    if (parts.length >= 5) {
+                        result.push({ id: parts[4], lat: parts[2], lng: parts[1], name: parts[4], apiId: '', isIrma: false });
+                    }
+                }
+            }
+            resolve(result);
+        }).catch(reject);
     });
+}
+
+function updateMarkers() {
+    console.log('Updating markers for', stations.length, 'stations');
     stations.forEach(function(station) {
+        console.log('Adding marker:', station.name, station.lat, station.lng);
         var marker = L.marker([parseFloat(station.lat), parseFloat(station.lng)]).addTo(map);
+        marker.bindPopup(station.name);
         marker.on('click', function() { openSidebar(station); });
     });
 }
