@@ -62,7 +62,9 @@ function loadBPFile(bpFile) {
             
             if (isIrma) {
                 for (var i = 2; i < lines.length; i++) {
-                    var line = lines[i].trim();
+                    var line = lines[i];
+                    if (!line || typeof line !== 'string') continue;
+                    line = line.trim();
                     if (!line || line.startsWith('#')) continue;
                     var hashIdx = line.index('#');
                     if (hashIdx === -1) continue;
