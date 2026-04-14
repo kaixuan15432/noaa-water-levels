@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOAA Water Levels - Map View</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; height: 100vh; display: block; position: relative; }
+        #map { width: 100%; height: 100%; }
+        #sidebar { position: absolute; bottom: 0; right: 0; width: 70%; height: 50%; padding: 20px; background: #f5f5f5; overflow-y: auto; display: none; box-sizing: border-box; z-index: 1000; }
+        #sidebar.active { display: block; }
+        h2 { margin: 0 0 10px 0; color: #333; }
+        #chart-container { width: 100%; height: calc(100% - 40px); }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="sidebar">
+        <h2 id="stationTitle">Station</h2>
+        <div id="chart-container"><canvas id="compareChart"></canvas></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+var stations = [];
+var modelData = {};
+var stationObservedData = {};
+var map;
+
+async function initMap() {
+    map = L.map('map').setView([27.0, -82.0], 7);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: 'OpenStreetMap'
+    }).addTo(map);
+    await loadBPFile();
+    stations.forEach(function(station) {
+        var marker = L.marker([parseFloat(station.lat), parseFloat(station.lng)]).addTo(map);
+        marker.on('click', function() { openSidebar(station); });
+    });
+}
+
+async function loadBPFile() {
+    var basePath = window.location.pathname.includes('/assets/') ? '' : '/huang96169.github.io';
+    var response = await fetch(basePath + '/assets/Florida_1mv1.bp');
+    var text = await response.text();
+    var lines = text.trim().split('\n');
+    stations = [];
+    for (var i = 2; i < lines.length; i++) {
+        var parts = lines[i].trim().split(/\s+/);
+        if (parts.length >= 5) {
+            stations.push({ id: parts[4], lat: parts[2], lng: parts[1], name: parts[4] });
+        }
+    }
+}
+
+function getStationName(id) {
+    var names = {
+        '8725520': 'Fort Myers, FL',
+        '8725110': 'Naples, FL',
+        '8724580': 'Key West, FL',
+        '8723970': 'Vaca Key, Florida Bay, FL',
+        '8723214': 'Virginia Key, FL',
+        '8722956': 'South Port Everglades, FL',
+        '8722670': 'Lake Worth Pier, Atlantic Ocean, FL',
+        '8726724': 'Clearwater Beach, FL',
+        '8726520': 'St. Petersburg, FL',
+        '8726384': 'Port Manatee, FL',
+        '8726667': 'Mckay Bay Entrance, FL ',
+        '8726607': 'Old Port Tampa, FL '
+    };
+    return names[id] || id;
+}
+
+async function openSidebar(station) {
+    document.getElementById('sidebar').classList.add('active');
+    await loadModelData();
+    await loadStationData(station.id);
+    renderCompareChart(station);
+}
+
+async function loadModelData() {
+    var basePath = window.location.pathname.includes('/assets/') ? '' : '/huang96169.github.io';
+    var response = await fetch(basePath + '/assets/model_predictions.txt');
+    var text = await response.text();
+    var lines = text.trim().split('\n');
+    var now = new Date();
+    var modelStart = new Date(now.getTime() - 7 * 86400000);
+    modelStart.setUTCHours(1, 0, 0, 0);
+    modelData = {};
+    stations.forEach(function(s) { modelData[s.id] = []; });
+    var firstTime = null, lastTime = null;
+    lines.forEach(function(line, index) {
+        var timestamp = new Date(modelStart.getTime() + index * 3600000);
+        var parts = line.trim().split(/\s+/);
+        if (!firstTime) firstTime = timestamp;
+        lastTime = timestamp;
+        if (parts.length >= 13) {
+            for (var i = 0; i < 12 && i < stations.length; i++) {
+                var value = parseFloat(parts[i + 1]);
+                if (!isNaN(value)) {
+                    modelData[stations[i].id].push({ time: timestamp, value: value });
+                }
+            }
+        }
+    });
+    modelTimeRange = { start: firstTime, end: lastTime };
+}
+
+async function loadStationData(stationId) {
+    if (!modelTimeRange.start || !modelTimeRange.end) return;
+    var now = new Date();
+    var noaaStart = new Date(now);
+    noaaStart.setDate(noaaStart.getDate() - 7);
+    noaaStart.setUTCHours(0, 0, 0, 0);
+    var url = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?station=' + stationId + 
+              '&product=water_level&datum=NAVD&units=metric&time_zone=gmt&format=json&begin_date=' + 
+              noaaStart.toISOString().slice(0, 10).replace(/-/g, '') + '&end_date=' + 
+              now.toISOString().slice(0, 10).replace(/-/g, '');
+    try {
+        var response = await fetch(url);
+        if (!response.ok) return;
+        var data = await response.json();
+        if (data.error || !data.data) return;
+        var rawData = data.data.map(function(item) {
+            return { time: new Date(item.t.replace(' ', 'T') + 'Z'), value: parseFloat(item.v) };
+        }).filter(function(item) { return !isNaN(item.value); });
+        var modelStartUTC = modelTimeRange.start.getTime();
+        stationObservedData[stationId] = rawData.filter(function(d) { return d.time.getTime() >= modelStartUTC; });
+    } catch (err) {
+        console.error(err);
+    }
+}
+
+function removeAnomaly(data) {
+    if (!data || data.length === 0) return data;
+    var sum = 0;
+    data.forEach(function(d) { sum += d.value; });
+    var avg = sum / data.length;
+    return data.map(function(d) { return { time: d.time, value: d.value - avg }; });
+}
+
+function renderCompareChart(station) {
+    var stationId = station.id;
+    var observedData = removeAnomaly(stationObservedData[stationId] || []);
+    var predData = removeAnomaly(modelData[stationId] || []);
+    
+    var obsMap = new Map();
+    observedData.forEach(function(d) { obsMap.set(d.time.getTime(), d.value); });
+    var predMap = new Map();
+    predData.forEach(function(d) { predMap.set(d.time.getTime(), d.value); });
+    
+    var absSum = 0;
+    var count = 0;
+    predData.forEach(function(d) {
+        if (obsMap.has(d.time.getTime())) {
+            absSum += Math.abs(d.value - obsMap.get(d.time.getTime()));
+            count++;
+        }
+    });
+    var mae = count > 0 ? absSum / count : 0;
+    
+    document.getElementById('stationTitle').textContent = station.id + ' - ' + getStationName(station.id) + 
+        ' (MAE: ' + mae.toFixed(3) + ')';
+    
+    var chartStartTime = modelTimeRange.start.getTime();
+    
+    var obsValues = observedData.map(function(d) { return d.value; });
+    var predValues = predData.map(function(d) { return d.value; });
+    
+    var chartStartTime = modelTimeRange.start.getTime();
+    var chartEndTime = modelTimeRange.end.getTime();
+    var obsMap = new Map();
+    observedData.forEach(function(d) { obsMap.set(d.time.getTime(), d.value); });
+    var predMap = new Map();
+    predData.forEach(function(d) { predMap.set(d.time.getTime(), d.value); });
+    
+    var labels = [];
+    var obsDataset = [];
+    var predDataset = [];
+    for (var t = chartStartTime; t <= chartEndTime; t += 3600000) {
+        var date = new Date(t);
+        var label = date.getUTCFullYear() + '-' + 
+                   String(date.getUTCMonth() + 1).padStart(2, '0') + '-' + 
+                   String(date.getUTCDate()).padStart(2, '0') + ' ' + 
+                   String(date.getUTCHours()).padStart(2, '0') + ':00';
+        labels.push(label);
+        obsDataset.push(obsMap.has(t) ? obsMap.get(t) : null);
+        predDataset.push(predMap.has(t) ? predMap.get(t) : null);
+    }
+    
+    if (compareChart && compareChart.destroy) compareChart.destroy();
+    var ctx = document.getElementById('compareChart').getContext('2d');
+    compareChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                { label: 'Observed (NOAA)', data: obsDataset, borderColor: '#cc0000', backgroundColor: 'rgba(204,0,0,0.1)', fill: false, pointRadius: 1, tension: 0.1, spanGaps: true },
+                { label: 'Model Prediction', data: predDataset, borderColor: '#0066cc', backgroundColor: 'rgba(0,102,204,0.05)', fill: false, pointRadius: 1, tension: 0.1, spanGaps: true }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { intersect: false, mode: 'index' },
+            plugins: { legend: { display: true, position: 'top' } },
+            scales: {
+                x: { title: { display: true, text: 'Date (GMT)' } },
+                y: { title: { display: true, text: 'Water Level (meters)' } }
+            }
+        }
+    });
+}
+
+initMap();
+    </script>
+</body>
+</html>
