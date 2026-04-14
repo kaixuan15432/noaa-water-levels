@@ -62,26 +62,25 @@ function loadBPFile(bpFile) {
             
             if (isIrma) {
                 for (var i = 2; i < lines.length; i++) {
-                    var line = lines[i];
-                    if (!line || typeof line !== 'string') continue;
-                    line = line.trim();
-                    if (!line || line.startsWith('#')) continue;
-                    var hashIdx = line.index('#');
-                    if (hashIdx === -1) continue;
-                    var leftPart = line.substring(0, hashIdx).trim();
-                    var rightPart = line.substring(hashIdx + 1).trim();
-                    var leftParts = leftPart.split(/\s+/);
-                    var rightParts = rightPart.split(/\s+/);
-                    if (leftParts.length >= 3 && rightParts.length >= 1) {
-                        result.push({
-                            id: rightParts[0],
-                            apiId: rightParts[1] || '',
-                            lat: leftParts[2],
-                            lng: leftParts[1],
-                            name: rightParts[0],
-                            isIrma: true
-                        });
-                    }
+                    try {
+                        var line = String(lines[i] || '').trim();
+                        if (!line || line.indexOf('#') === -1) continue;
+                        var hashIdx = line.indexOf('#');
+                        var leftPart = line.substring(0, hashIdx).trim();
+                        var rightPart = line.substring(hashIdx + 1).trim();
+                        var leftParts = leftPart.split(/\s+/);
+                        var rightParts = rightPart.split(/\s+/);
+                        if (leftParts.length >= 3 && rightParts.length >= 1) {
+                            result.push({
+                                id: rightParts[0],
+                                apiId: rightParts[1] || '',
+                                lat: leftParts[2],
+                                lng: leftParts[1],
+                                name: rightParts[0],
+                                isIrma: true
+                            });
+                        }
+                    } catch (e) { console.log('Skip line', i, e); }
                 }
             } else {
                 for (var i = 2; i < lines.length; i++) {
