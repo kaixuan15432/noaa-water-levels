@@ -29,6 +29,7 @@ var modelData = {};
 var stationObservedData = {};
 var map;
 var modelTimeRange = {};
+var compareChart;
 
 async function initMap() {
     map = L.map('map').setView([27.0, -82.0], 7);
@@ -41,9 +42,7 @@ async function initMap() {
 
 async function loadAllStations() {
     try {
-        var floridaStations = await loadBPFile('Florida_1mv1.bp');
-        var irmaStations = await loadBPFile('Irma_elev.bp');
-        stations = floridaStations.concat(irmaStations);
+        stations = await loadForecastStations();
         console.log('Total stations:', stations.length);
         updateMarkers();
     } catch (e) {
@@ -51,31 +50,22 @@ async function loadAllStations() {
     }
 }
 
-function loadBPFile(bpFile) {
+function loadForecastStations() {
     return new Promise(function(resolve, reject) {
-        fetch('data/' + bpFile).then(function(response) {
+        fetch('data/Forecast_stations.bp').then(function(response) {
             return response.text();
         }).then(function(text) {
             var lines = text.trim().split('\n');
             var result = [];
-            var isIrma = bpFile === 'Irma_elev.bp';
+            var numNOAA = 12;
             
-            if (isIrma) {
-                for (var i = 2; i < lines.length; i++) {
-                    try {
-                        var rawLine = lines[i];
-                        if (!rawLine) continue;
-                        var lineStr = '';
-                        if (typeof rawLine === 'string') {
-                            lineStr = rawLine.trim();
-                        } else if (typeof rawLine === 'number') {
-                            lineStr = String(rawLine).trim();
-                        } else {
-                            lineStr = String(rawLine).trim();
-                        }
-                        if (!lineStr || lineStr.length === 0) continue;
-                        var hashPos = lineStr.indexOf('#');
-                        if (hashPos < 0) continue;
+            for (var i = 2; i < lines.length; i++) {
+                try {
+                    var lineStr = String(lines[i] || '').trim();
+                    if (!lineStr || lineStr.length === 0) continue;
+                    
+                    var hashPos = lineStr.indexOf('#');
+                    if (hashPos >= 0) {
                         var leftSide = lineStr.substring(0, hashPos).trim();
                         var rightSide = lineStr.substring(hashPos + 1).trim();
                         var leftParts = leftSide.split(/\s+/);
@@ -87,17 +77,24 @@ function loadBPFile(bpFile) {
                                 lat: leftParts[2],
                                 lng: leftParts[1],
                                 name: rightParts[0],
-                                isIrma: true
+                                isSFWMD: true
                             });
                         }
-                    } catch (e) { console.log('Skip line', i, e); }
-                }
-            } else {
-                for (var i = 2; i < lines.length; i++) {
-                    var parts = lines[i].trim().split(/\s+/);
-                    if (parts.length >= 5) {
-                        result.push({ id: parts[4], lat: parts[2], lng: parts[1], name: parts[4], apiId: '', isIrma: false });
+                    } else {
+                        var parts = lineStr.split(/\s+/);
+                        if (parts.length >= 5) {
+                            result.push({
+                                id: parts[4],
+                                lat: parts[2],
+                                lng: parts[1],
+                                name: parts[4],
+                                apiId: '',
+                                isSFWMD: false
+                            });
+                        }
                     }
+                } catch (e) {
+                    console.log('Skip line', i, e);
                 }
             }
             resolve(result);
@@ -136,8 +133,8 @@ function getStationName(id) {
 async function openSidebar(station) {
     document.getElementById('sidebar').classList.add('active');
     await loadModelData();
-    if (station.isIrma && station.apiId) {
-        await loadIrmaStationData(station.apiId);
+    if (station.isSFWMD && station.apiId) {
+        await loadSFWMDStationData(station.apiId);
     } else {
         await loadStationData(station.id);
     }
@@ -163,12 +160,7 @@ async function loadModelData() {
         
         for (var i = 0; i < stations.length; i++) {
             var station = stations[i];
-            var colIndex;
-            if (station.isIrma) {
-                colIndex = 13 + (i - 12);
-            } else {
-                colIndex = 1 + i;
-            }
+            var colIndex = 1 + i;
             var value = parseFloat(parts[colIndex]);
             if (!isNaN(value)) {
                 modelData[station.id].push({ time: timestamp, value: value });
@@ -178,14 +170,8 @@ async function loadModelData() {
     modelTimeRange = { start: firstTime, end: lastTime };
 }
 
-async function loadIrmaStationData(apiId) {
+async function loadSFWMDStationData(apiId) {
     if (!modelTimeRange.start || !modelTimeRange.end || !apiId) return;
-    
-    var now = new Date();
-    var startDate = new Date(now);
-    startDate.setDate(startDate.getDate() - 7);
-    var startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
-    var endStr = now.toISOString().slice(0, 10).replace(/-/g, '');
     
     var url = 'https://insightsdata.api.sfwmd.gov/v1/insights-data/cont/data?timeseriesIds=' + apiId + '&reportType=timeseries&format=plot&period=1week';
     
@@ -265,7 +251,7 @@ function removeAnomaly(data) {
 }
 
 function renderCompareChart(station) {
-    var stationId = station.isIrma ? station.apiId : station.id;
+    var stationId = station.isSFWMD ? station.apiId : station.id;
     var observedData = removeAnomaly(stationObservedData[stationId] || []);
     var predData = removeAnomaly(modelData[station.id] || []);
     
@@ -284,9 +270,9 @@ function renderCompareChart(station) {
     });
     var mae = count > 0 ? absSum / count : 0;
     
-    var stationDisplayName = station.isIrma ? station.name : getStationName(station.id);
+    var stationDisplayName = station.isSFWMD ? station.name : getStationName(station.id);
     document.getElementById('stationTitle').textContent = station.name + 
-        (station.isIrma && station.apiId ? ' (' + station.apiId + ')' : ' - ' + stationDisplayName) + 
+        (station.isSFWMD && station.apiId ? ' (' + station.apiId + ')' : ' - ' + stationDisplayName) + 
         ' (MAE: ' + mae.toFixed(3) + ')';
     
     var chartStartTime = modelTimeRange.start.getTime();
