@@ -42,46 +42,12 @@ async function initMap() {
 
 async function loadAllStations() {
     try {
-        var allStations = await loadForecastStations();
-        console.log('Total stations before filter:', allStations.length);
-        
-        var validStations = [];
-        for (var i = 0; i < allStations.length; i++) {
-            var station = allStations[i];
-            if (station.isSFWMD && station.apiId) {
-                var hasData = await checkSFWMDData(station.apiId);
-                if (hasData) {
-                    validStations.push(station);
-                }
-            } else {
-                validStations.push(station);
-            }
-        }
-        
-        stations = validStations;
-        console.log('Total stations after filter:', stations.length);
+        stations = await loadForecastStations();
+        console.log('Total stations:', stations.length);
         updateMarkers();
     } catch (e) {
         console.error('Error loading stations:', e);
     }
-}
-
-function checkSFWMDData(apiId) {
-    return new Promise(function(resolve) {
-        var url = 'https://insightsdata.api.sfwmd.gov/v1/insights-data/cont/data?timeseriesIds=' + apiId + '&reportType=timeseries&format=plot&period=1week';
-        fetch(url).then(function(response) {
-            if (!response.ok) { resolve(false); return; }
-            return response.json();
-        }).then(function(data) {
-            if (data && data.timeseries && data.timeseries[0] && data.timeseries[0].values && data.timeseries[0].values.length > 0) {
-                resolve(true);
-            } else {
-                resolve(false);
-            }
-        }).catch(function() {
-            resolve(false);
-        });
-    });
 }
 
 function loadForecastStations() {
